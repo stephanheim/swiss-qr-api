@@ -1,49 +1,90 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const { QRBill } = require("swiss-qrbill");
+const QRCode = require("qrcode");
+const { PDFDocument, rgb, StandardFonts } = require("pdf-lib");
 
 const app = express();
 app.use(bodyParser.json());
+
+function buildSwissQR(data) {
+  return [
+    "SPC",
+    "0200",
+    "1",
+    data.iban,
+    "S",
+    data.creditorName,
+    data.street,
+    "",
+    data.zip,
+    data.city,
+    "CH",
+    "",
+    "",
+    "",
+    Number(data.amount).toFixed(2),
+    "CHF",
+    "S",
+    data.debtorName,
+    "",
+    "",
+    "",
+    "CH",
+    "NON",
+    data.reference || "",
+    data.message || "",
+    "EPD",
+  ].join("\n");
+}
 
 app.post("/generate", async (req, res) => {
   try {
     const d = req.body;
 
-    const bill = new QRBill({
-      currency: "CHF",
-      amount: d.amount,
+    const qrText = buildSwissQR(d);
 
-      creditor: {
-        account: d.iban,
-        name: d.creditorName,
-        address: d.street,
-        zip: d.zip,
-        city: d.city,
-        country: "CH",
-      },
+    // QR Code erzeugen
+    const qrImage = await QRCode.toBuffer(qrText);
 
-      debtor: {
-        name: d.debtorName,
-      },
+    // PDF erzeugen
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([600, 800]);
 
-      reference: d.reference || "NON",
-      message: d.message || "",
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const qr = await pdfDoc.embedPng(qrImage);
+
+    const qrDims = qr.scale(1);
+
+    page.drawText("Swiss QR Rechnung", {
+      x: 50,
+      y: 750,
+      size: 18,
+      font,
     });
 
-    const pdf = await bill.toPDF();
+    page.drawText(`Betrag: CHF ${d.amount}`, { x: 50, y: 720, size: 12, font });
+    page.drawText(`Name: ${d.debtorName}`, { x: 50, y: 700, size: 12, font });
+
+    page.drawImage(qr, {
+      x: 50,
+      y: 400,
+      width: 200,
+      height: 200,
+    });
+
+    const pdfBytes = await pdfDoc.save();
 
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": "attachment; filename=qrbill.pdf",
+      "Content-Disposition": "attachment; filename=qr.pdf",
     });
 
-    res.send(pdf);
-  } catch (e) {
-    console.error(e);
-    res.status(500).send(e.message);
+    res.send(Buffer.from(pdfBytes));
+  } catch (err) {
+    console.error(err);
+    res.status(500).send(err.message);
   }
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Swiss QR API running");
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Swiss QR API running on", PORT));
